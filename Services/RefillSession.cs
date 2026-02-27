@@ -5,6 +5,7 @@ using ShopManager.Config;
 using ShopManager.GameAccess;
 using ShopManager.Logging;
 using UnityEngine;
+using ShopManager.Debugging;
 
 namespace ShopManager.Services
 {
@@ -101,7 +102,18 @@ namespace ShopManager.Services
 
                 case Phase.RefreshWarehouseUI:
                     WarehouseBoxOps.FlushDeferredDestroys();
+
+                    // Hard prune immediately after destruction so RestockManager stops spamming Update NREs
+                    try
+                    {
+                        var rm = UnityEngine.Object.FindObjectOfType<RestockManager>();
+                        if (rm != null)
+                            ShopManager.Patches.RestockManagerSanitizer.PruneLists(rm);
+                    }
+                    catch { /* ignore */ }
+
                     WarehouseBoxOps.RefreshAllWarehouseBoxSlotLabels();
+
                     CurrentPhase = Phase.Done;
                     SMLog.Info($"[ShopManager] Refill complete. Placed={TotalPlaced} Consumed={TotalConsumed}. Took {(Time.realtimeSinceStartup - _startedRealtime):0.00}s");
                     break;
@@ -137,17 +149,44 @@ namespace ShopManager.Services
             for (; _scanIndex < end; _scanIndex++)
             {
                 var c = _candidates[_scanIndex];
-                if (c == null) continue;
+                if (c == null)
+                {
+                    ShelfScanDebug.LogNullCandidate(_scanIndex);
+                    continue;
+                }
+
+                // Skip inactive / disabled objects (prefabs, unused layouts, etc.)
+                if (c.gameObject == null || !c.gameObject.activeInHierarchy)
+                {
+                    ShelfScanDebug.LogScanDecision(c, "SKIP:inactive", c.GetItemType(), max: -1, cur: -1);
+                    continue;
+                }
 
                 // Hard gates (cheap + early)
                 var t = c.GetItemType();
-                if (t == EItemType.None) continue;
+                if (t == EItemType.None)
+                {
+                    ShelfScanDebug.LogScanDecision(c, "SKIP:none_type", t, max: -1, cur: -1);
+                    continue;
+                }
 
                 int max = c.GetMaxItemCount();
-                if (max <= 0) continue;
+                if (max <= 0)
+                {
+                    ShelfScanDebug.LogScanDecision(c, "SKIP:max<=0", t, max, cur: -1);
+                    continue;
+                }
 
-                int cur = ShopManager.GameAccess.ShelfCompartmentOps.GetCurrentUnits(c);
-                if (cur >= max) continue;
+                int cur = ShelfCompartmentOps.GetCurrentUnits(c);
+
+                // THIS is the exact decision point you care about:
+                if (cur >= max)
+                {
+                    ShelfScanDebug.LogScanDecision(c, "SKIP:full(cur>=max)", t, max, cur);
+                    continue;
+                }
+
+                ShelfScanDebug.LogScanDecision(c, "TARGET:needs_fill", t, max, cur, includePath: true);
 
                 if (!TargetsByType.TryGetValue(t, out var list))
                 {
@@ -217,7 +256,13 @@ namespace ShopManager.Services
                 var comp = comps[_compIndexForType];
                 if (comp == null) { _compIndexForType++; continue; }
 
-                int cur = ShopManager.GameAccess.ShelfCompartmentOps.GetCurrentUnits(comp);
+                if (comp.gameObject == null || !comp.gameObject.activeInHierarchy)
+                {
+                    _compIndexForType++;
+                    continue;
+                }
+
+                int cur = ShelfCompartmentOps.GetCurrentUnits(comp);
                 int max = comp.GetMaxItemCount();
                 int need = max - cur;
                 if (need <= 0) { _compIndexForType++; continue; }

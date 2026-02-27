@@ -16,16 +16,31 @@ namespace ShopManager.GameAccess
                 var all = Resources.FindObjectsOfTypeAll<ShelfCompartment>();
                 if (all == null || all.Length == 0) return result;
 
-                int seen = 0, sceneInvalid = 0, notSale = 0, notItem = 0, isBoxSlot = 0;
+                int seen = 0, sceneInvalid = 0, inactive = 0, disabled = 0, notSale = 0, notItem = 0, isBoxSlot = 0;
 
                 foreach (var c in all)
                 {
                     if (c == null || c.gameObject == null) continue;
                     seen++;
 
+                    // Must be a real scene object (not prefab / asset / pooled template)
                     if (!c.gameObject.scene.IsValid())
                     {
                         sceneInvalid++;
+                        continue;
+                    }
+
+                    // Must actually be active in the hierarchy (filters out hidden/disabled shop layouts, etc.)
+                    if (!c.gameObject.activeInHierarchy)
+                    {
+                        inactive++;
+                        continue;
+                    }
+
+                    // Component itself must be enabled
+                    if (!c.isActiveAndEnabled)
+                    {
+                        disabled++;
                         continue;
                     }
 
@@ -51,7 +66,7 @@ namespace ShopManager.GameAccess
                     result.Add(c);
                 }
 
-                SMLog.Debug($"[Finders] ShelfCompartment scan: seen={seen} shopFound={result.Count} sceneInvalid={sceneInvalid} notForSale={notSale} notItem={notItem} boxSlotsSkipped={isBoxSlot}");
+                SMLog.Debug($"[Finders] ShelfCompartment scan: seen={seen} shopFound={result.Count} sceneInvalid={sceneInvalid} inactive={inactive} disabled={disabled} notForSale={notSale} notItem={notItem} boxSlotsSkipped={isBoxSlot}");
             }
             catch (System.Exception ex)
             {

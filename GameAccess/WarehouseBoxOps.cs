@@ -230,14 +230,17 @@ namespace ShopManager.GameAccess
                         // Unity destroyed-object weirdness: use ReferenceEquals and also Unity null checks.
                         bool contains = false;
                         for (int i = 0; i < list.Count; i++)
-                        {
-                            var b = list[i];
-                            if (ReferenceEquals(b, box))
-                            {
-                                contains = true;
-                                break;
-                            }
-                        }
+{
+    var b = list[i];
+    if (b == null) continue;
+    if ((UnityEngine.Object)b == null) continue; // Unity fake-null
+
+    if (ReferenceEquals(b, box))
+    {
+        contains = true;
+        break;
+    }
+}
 
                         if (contains)
                         {
@@ -267,7 +270,8 @@ namespace ShopManager.GameAccess
         internal static void DeferDestroy(InteractablePackagingBox_Item box)
         {
             if (box == null) return;
-            _destroyQueue.Add(box);
+            if (!_destroyQueue.Contains(box))
+                _destroyQueue.Add(box);
         }
 
         internal static void FlushDeferredDestroys()
@@ -278,6 +282,7 @@ namespace ShopManager.GameAccess
             {
                 var b = _destroyQueue[i];
                 if (b == null) continue;
+                if ((UnityEngine.Object)b == null) continue;
                 SafelyDestroyBoxAndDetachFromWarehouseSlot(b);
             }
             _destroyQueue.Clear();

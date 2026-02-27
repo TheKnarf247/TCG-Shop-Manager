@@ -45,5 +45,6 @@ namespace ShopManager.Services
             // We'll clear when it has finished by observing that it no longer does work next tick.
             // Practical approach: clear when phase is Done/Cancelled (add a property if you want).
         }
+
     }
 }
