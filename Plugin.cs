@@ -13,7 +13,7 @@ namespace ShopManager
     {
         public const string PluginGuid = "com.knarf.shopmanager";
         public const string PluginName = "Shop Manager";
-        public const string PluginVersion = "0.1.0";
+        public const string PluginVersion = "1.0";
 
         private Harmony _harmony = null!;
 
@@ -32,7 +32,6 @@ namespace ShopManager
 
         private void Update()
         {
-            // Hotkey polling lives here
             HotkeyController.Tick();
         }
 

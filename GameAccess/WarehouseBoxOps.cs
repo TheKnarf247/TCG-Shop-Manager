@@ -10,11 +10,9 @@ namespace ShopManager.GameAccess
 {
     internal static class WarehouseBoxOps
     {
-        // Private field access (ShelfCompartment.m_ItemAmount)
+        // ShelfCompartment backing count field (used when compartment inactive/unspawned)
         private static readonly Func<ShelfCompartment, int>? _getItemAmount;
         private static readonly Action<ShelfCompartment, int>? _setItemAmount;
-
-        private static bool _loggedBackingField;
 
         static WarehouseBoxOps()
         {
@@ -25,12 +23,7 @@ namespace ShopManager.GameAccess
                 {
                     _getItemAmount = (ShelfCompartment sc) => (int)(fi.GetValue(sc) ?? 0);
                     _setItemAmount = (ShelfCompartment sc, int v) => fi.SetValue(sc, v);
-
-                    if (!_loggedBackingField)
-                    {
-                        _loggedBackingField = true;
-                        SMLog.Info("[WarehouseBoxOps] Discovered backing count field: ShelfCompartment.m_ItemAmount");
-                    }
+                    SMLog.Info("[WarehouseBoxOps] Using ShelfCompartment.m_ItemAmount backing field.");
                 }
             }
             catch
@@ -40,30 +33,18 @@ namespace ShopManager.GameAccess
             }
         }
 
-        /// <summary>
-        /// New: Build cache using the same list the game uses (RestockManager),
-        /// including stored boxes, small boxes, and inactive compartments.
-        /// </summary>
-        internal static Dictionary<EItemType, List<InteractablePackagingBox_Item>> BuildBigBoxCache()
-        {
-            // Keep the old method name so you don't have to touch other files.
-            return BuildBoxCache(includeStored: true);
-        }
-
         internal static Dictionary<EItemType, List<InteractablePackagingBox_Item>> BuildBoxCache(bool includeStored)
         {
             var dict = new Dictionary<EItemType, List<InteractablePackagingBox_Item>>();
 
             List<InteractablePackagingBox_Item>? boxes = null;
-
             try
             {
-                // Best source: the game's centralized tracking list
                 boxes = RestockManager.GetItemPackagingBoxListWithItem(includeStored);
             }
             catch (Exception ex)
             {
-                SMLog.Warn($"[WarehouseBoxOps] RestockManager box list not available yet: {ex.Message}");
+                SMLog.Warn($"[WarehouseBoxOps] RestockManager box list not available: {ex.Message}");
             }
 
             if (boxes == null || boxes.Count == 0)
@@ -73,6 +54,7 @@ namespace ShopManager.GameAccess
             {
                 if (box == null) continue;
                 if (!box.IsValidObject()) continue;
+                if (box.m_ItemCompartment == null) continue;
 
                 var t = box.GetItemType();
                 if (t == EItemType.None) continue;
@@ -89,113 +71,196 @@ namespace ShopManager.GameAccess
                 list.Add(box);
             }
 
-            // Optional: prefer boxes with more stock first (reduces box switching)
             foreach (var kv in dict)
                 kv.Value.Sort((a, b) => GetAvailableUnits(b).CompareTo(GetAvailableUnits(a)));
 
             return dict;
         }
 
-        /// <summary>
-        /// Returns item count from a packaging box, even when the internal compartment is inactive.
-        /// </summary>
         internal static int GetAvailableUnits(InteractablePackagingBox_Item box)
         {
             if (box == null) return 0;
 
             try
             {
-                // If the item compartment exists and reports a count, use it
                 if (box.m_ItemCompartment != null)
                 {
                     int c = box.m_ItemCompartment.GetItemCount();
                     if (c > 0) return c;
 
-                    // If inactive, GetItemCount() may lie (0). Use backing field if possible.
                     if (_getItemAmount != null)
-                    {
-                        int raw = _getItemAmount(box.m_ItemCompartment);
-                        return raw;
-                    }
+                        return _getItemAmount(box.m_ItemCompartment);
                 }
             }
-            catch
-            {
-                // ignore
-            }
+            catch { /* ignore */ }
 
             return 0;
         }
 
-        /// <summary>
-        /// Worker-like move: ask the box to dispense into the shelf compartment.
-        /// This is the most "legit" transfer path.
-        /// </summary>
-        internal static bool TryMoveOneItemToShelf(
+        internal static bool TryConsumeOneAndGetItemFromOpenedBox(
             InteractablePackagingBox_Item box,
-            ShelfCompartment shelfComp)
+            out Item? itemOut)
         {
-            if (box == null || shelfComp == null)
-                return false;
+            itemOut = null;
 
-            if (!box.IsValidObject())
-                return false;
-
-            if (!shelfComp.HasEnoughSlot())
-                return false;
-
-            var boxType = box.GetItemType();
-            var shelfType = shelfComp.GetItemType();
-            if (boxType == EItemType.None || shelfType == EItemType.None || boxType != shelfType)
-                return false;
-
-            int shelfBefore = shelfComp.GetItemCount();
-            int boxBefore = GetAvailableUnits(box);
+            if (box == null || !box.IsValidObject()) return false;
+            if (box.m_ItemCompartment == null) return false;
+            if (!box.IsBoxOpened()) return false;
 
             try
             {
-                // Your build requires (bool isPlayer, ShelfCompartment target)
-                box.DispenseItem(false, shelfComp);
+                var item = box.m_ItemCompartment.GetFirstItem();
+                if (item == null) return false;
+
+                box.m_ItemCompartment.RemoveItem(item);
+
+                // Keep the box’s own UI consistent
+                try { box.m_ItemCompartment.SetPriceTagItemAmountText(); } catch { /* ignore */ }
+
+                itemOut = item;
+                return true;
             }
             catch (Exception ex)
             {
-                SMLog.Debug($"[WarehouseBoxOps] Dispense exception: {ex.Message}");
+                SMLog.Debug($"[WarehouseBoxOps] Opened consume failed: {ex.Message}");
                 return false;
             }
-
-            int shelfAfter = shelfComp.GetItemCount();
-            int boxAfter = GetAvailableUnits(box);
-
-            bool shelfChanged = shelfAfter > shelfBefore;
-            bool boxChanged = boxAfter < boxBefore;
-
-            // If neither changed, treat as failure so caller can try next box
-            return (shelfChanged || boxChanged);
         }
 
-        /// <summary>
-        /// Best-effort rollback: add N units back into a box by adjusting count.
-        /// (Rarely needed when using DispenseItem, but kept for safety.)
-        /// </summary>
-        internal static void AddUnits(InteractablePackagingBox_Item box, int units)
+        internal static bool TryConsumeOneFromUnopenedBox(InteractablePackagingBox_Item box)
         {
-            if (box == null || units <= 0) return;
-            if (box.m_ItemCompartment == null) return;
+            if (box == null || !box.IsValidObject()) return false;
+            if (box.m_ItemCompartment == null) return false;
+            if (box.IsBoxOpened()) return false;
 
-            if (_setItemAmount == null) return;
+            int before = GetAvailableUnits(box);
+            if (before <= 0) return false;
+
+            int after = before - 1;
 
             try
             {
-                int cur = (_getItemAmount != null) ? _getItemAmount(box.m_ItemCompartment) : box.m_ItemCompartment.GetItemCount();
-                int next = cur + units;
+                // Keep backing field consistent when available
+                if (_setItemAmount != null)
+                    _setItemAmount(box.m_ItemCompartment, after);
 
-                _setItemAmount(box.m_ItemCompartment, next);
-                box.m_ItemCompartment.PreSpawnItemUpdate(next);
+                box.m_ItemCompartment.PreSpawnItemUpdate(after);
+
+                if (after > 0)
+                {
+                    try { box.m_ItemCompartment.SetPriceTagItemAmountText(); } catch { /* ignore */ }
+                }
+                else
+                {
+                    SafelyDestroyBoxAndDetachFromWarehouseSlot(box);
+                }
+
+                return true;
             }
-            catch
+            catch (Exception ex)
             {
-                // ignore
+                SMLog.Debug($"[WarehouseBoxOps] Unopened consume failed: {ex.Message}");
+                return false;
             }
+        }
+
+        /// <summary>
+        /// Option A: After refill, brute-refresh every warehouse BOX SLOT (ShelfCompartment.m_CanPutBox == true)
+        /// so the rack UI catches up immediately.
+        /// </summary>
+        internal static void RefreshAllWarehouseBoxSlotLabels()
+        {
+            int refreshed = 0;
+
+            try
+            {
+                var all = Resources.FindObjectsOfTypeAll<ShelfCompartment>();
+                if (all == null || all.Length == 0) return;
+
+                foreach (var sc in all)
+                {
+                    if (sc == null || sc.gameObject == null) continue;
+                    if (!sc.gameObject.scene.IsValid()) continue;
+
+                    if (!sc.m_CanPutBox) continue;
+
+                    try
+                    {
+                        sc.SetPriceTagItemAmountText();
+                        // Optional but can help icons update for some racks:
+                        sc.SetPriceTagItemImage();
+                        refreshed++;
+                    }
+                    catch { /* ignore per-compartment */ }
+                }
+            }
+            catch (Exception ex)
+            {
+                SMLog.Debug($"[WarehouseBoxOps] RefreshAllWarehouseBoxSlotLabels failed: {ex.Message}");
+            }
+
+            SMLog.Info($"[WarehouseBoxOps] Refreshed {refreshed} warehouse box-slot compartments.");
+        }
+
+        /// <summary>
+        /// When a box hits 0, destroying it without removing it from the warehouse slot list
+        /// can leave stale UI/state. This tries to detach it first, then destroys.
+        /// </summary>
+        private static void SafelyDestroyBoxAndDetachFromWarehouseSlot(InteractablePackagingBox_Item box)
+        {
+            if (box == null) return;
+
+            // Best-effort: find the warehouse slot compartment that still thinks it contains this box
+            try
+            {
+                var all = Resources.FindObjectsOfTypeAll<ShelfCompartment>();
+                if (all != null)
+                {
+                    foreach (var sc in all)
+                    {
+                        if (sc == null || sc.gameObject == null) continue;
+                        if (!sc.gameObject.scene.IsValid()) continue;
+                        if (!sc.m_CanPutBox) continue;
+
+                        List<InteractablePackagingBox_Item>? list = null;
+                        try { list = sc.GetInteractablePackagingBoxList(); } catch { }
+
+                        if (list == null || list.Count == 0) continue;
+
+                        // Unity destroyed-object weirdness: use ReferenceEquals and also Unity null checks.
+                        bool contains = false;
+                        for (int i = 0; i < list.Count; i++)
+                        {
+                            var b = list[i];
+                            if (ReferenceEquals(b, box))
+                            {
+                                contains = true;
+                                break;
+                            }
+                        }
+
+                        if (contains)
+                        {
+                            try { sc.RemoveBox(box); } catch { /* ignore */ }
+                            break;
+                        }
+                    }
+                }
+            }
+            catch { /* ignore */ }
+
+            // Now kill the box
+            try
+            {
+                if (box.m_ItemCompartment != null)
+                {
+                    try { box.m_ItemCompartment.SetPriceTagVisibility(false); } catch { }
+                    try { box.m_ItemCompartment.PreSpawnItemUpdate(0); } catch { }
+                }
+            }
+            catch { /* ignore */ }
+
+            try { UnityEngine.Object.Destroy(box.gameObject); } catch { /* ignore */ }
         }
     }
 }

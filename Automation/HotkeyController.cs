@@ -21,15 +21,8 @@ namespace ShopManager.Automation
         {
             if (!SMConfig.Enabled.Value) return;
 
-            // KeyboardShortcut supports modifiers too, but you wanted an optional Shift gate.
             if (!SMConfig.RefillHotkey.Value.IsDown())
                 return;
-
-            if (SMConfig.RefillHotkeyRequiresShift.Value)
-            {
-                bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-                if (!shift) return;
-            }
 
             SMLog.Info("[ShopManager] Hotkey pressed → running refill.");
             ShopRefillService.RunOnce();

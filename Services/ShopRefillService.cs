@@ -1,4 +1,5 @@
 ﻿#nullable enable
+using System;
 using System.Collections.Generic;
 using ShopManager.Config;
 using ShopManager.GameAccess;
@@ -12,109 +13,137 @@ namespace ShopManager.Services
         {
             if (!SMConfig.Enabled.Value) return;
 
-            int totalMoved = 0;
-
-            // 1) Grab ALL shop item compartments directly (no Shelf.Init dependency)
+            // 1) Find shop compartments
             var shopComps = Finders.FindAllShopItemCompartments();
             if (shopComps.Count == 0)
             {
-                SMLog.Warn("[ShopManager] No shop compartments found (Shop shelves not detected).");
+                SMLog.Warn("[ShopManager] No shop compartments found.");
                 return;
             }
 
-            // 2) “Labeled only” = has a concrete assigned item type
-            var targets = new List<ShelfCompartment>();
+            // 2) Build targets grouped by type
+            var targetsByType = new Dictionary<EItemType, List<ShelfCompartment>>();
+            int targetCount = 0;
+
             foreach (var c in shopComps)
             {
                 var t = c.GetItemType();
-                if (t == EItemType.None) continue; // unlabeled
+                if (t == EItemType.None) continue;
 
                 int cur = c.GetItemCount();
                 int max = c.GetMaxItemCount();
                 if (max <= 0) continue;
+                if (cur >= max) continue;
 
-                if (cur < max)
-                    targets.Add(c);
+                if (!targetsByType.TryGetValue(t, out var list))
+                {
+                    list = new List<ShelfCompartment>();
+                    targetsByType[t] = list;
+                }
 
-                SMLog.Debug($"[ShopManager] Comp idx={c.GetIndex()} type={t} cur={cur} max={max} target={(cur < max)}");
+                list.Add(c);
+                targetCount++;
             }
 
-            if (targets.Count == 0)
+            if (targetCount == 0)
             {
                 SMLog.Info("[ShopManager] No labeled shop compartments need refilling.");
                 return;
             }
 
-            SMLog.Info($"[ShopManager] Refill targets: {targets.Count} compartments.");
+            // 3) Build box cache (include stored)
+            var boxCache = WarehouseBoxOps.BuildBoxCache(includeStored: true);
 
-            // 3) Build a cache of warehouse big boxes ONCE
-            var boxCache = WarehouseBoxOps.BuildBigBoxCache();
+            int totalPlaced = 0;
+            int totalConsumed = 0;
 
-            // 4) Refill each target from cached warehouse boxes
-            foreach (var comp in targets)
+            // 4) For each item type, fill compartments using boxes of that type
+            foreach (var kv in targetsByType)
             {
-                var itemType = comp.GetItemType();
-                if (itemType == EItemType.None) continue;
+                var type = kv.Key;
+                var comps = kv.Value;
 
-                int shelfBeforePass = comp.GetItemCount();
-                int deficit = comp.GetMaxItemCount() - shelfBeforePass;
-                if (deficit <= 0) continue;
-
-                if (!boxCache.TryGetValue(itemType, out var boxes) || boxes.Count == 0)
+                if (!boxCache.TryGetValue(type, out var boxes) || boxes.Count == 0)
                 {
-                    SMLog.Debug($"[ShopManager] Could not fill {itemType} (no matching warehouse stock).");
+                    SMLog.Debug($"[ShopManager] No warehouse boxes for {type}.");
                     continue;
                 }
 
-                int movedForThisComp = 0;
+                int boxIndex = 0;
 
-                // Iterate boxes for this item type
-                for (int i = 0; i < boxes.Count && movedForThisComp < deficit; i++)
+                foreach (var comp in comps)
                 {
-                    var box = boxes[i];
-                    if (box == null) continue;
+                    int cur = comp.GetItemCount();
+                    int max = comp.GetMaxItemCount();
+                    int need = max - cur;
+                    if (need <= 0) continue;
 
-                    // Keep trying this box until either:
-                    // - we filled the deficit
-                    // - the box is empty
-                    // - a move attempt doesn't actually change counts (means our move path isn't valid for that box right now)
-                    while (movedForThisComp < deficit && comp.HasEnoughSlot())
+                    int filled = 0;
+
+                    while (filled < need && comp.HasEnoughSlot())
                     {
-                        int boxBefore = WarehouseBoxOps.GetAvailableUnits(box);
-                        if (boxBefore <= 0) break;
+                        // advance to next box with stock
+                        while (boxIndex < boxes.Count && WarehouseBoxOps.GetAvailableUnits(boxes[boxIndex]) <= 0)
+                            boxIndex++;
 
-                        int shelfBefore = comp.GetItemCount();
-
-                        // Attempt one move
-                        if (!WarehouseBoxOps.TryMoveOneItemToShelf(box, comp))
+                        if (boxIndex >= boxes.Count)
                             break;
 
-                        int boxAfter = WarehouseBoxOps.GetAvailableUnits(box);
-                        int shelfAfter = comp.GetItemCount();
+                        var box = boxes[boxIndex];
+                        if (box == null) { boxIndex++; continue; }
 
-                        bool boxChanged = boxAfter < boxBefore;
-                        bool shelfChanged = shelfAfter > shelfBefore;
-
-                        if (!boxChanged && !shelfChanged)
+                        // OPENED BOX: real item move
+                        if (box.IsBoxOpened())
                         {
-                            // Important: DO NOT count this as a move.
-                            // Also: stop using this box, because we're not actually affecting inventory/state.
-                            SMLog.Info($"[ShopManager] Move did not change counts. type={itemType} boxBefore={boxBefore} boxAfter={boxAfter} shelfBefore={shelfBefore} shelfAfter={shelfAfter}");
+                            if (!WarehouseBoxOps.TryConsumeOneAndGetItemFromOpenedBox(box, out var item) || item == null)
+                            {
+                                boxIndex++; // box not usable right now
+                                continue;
+                            }
+
+                            bool placed = ItemTransferOps.TryPlaceExistingItemIntoShelfCompartment(comp, item);
+                            if (!placed)
+                            {
+                                try { item.transform.SetParent(box.transform, true); } catch { }
+                                SMLog.Debug($"[ShopManager] Place failed after consume (opened). type={type}");
+                                break;
+                            }
+
+                            totalConsumed++;
+                            totalPlaced++;
+                            filled++;
+                            continue;
+                        }
+
+                        // UNOPENED BOX: decrement count, then spawn onto shelf
+                        bool consumed = WarehouseBoxOps.TryConsumeOneFromUnopenedBox(box);
+                        if (!consumed)
+                        {
+                            boxIndex++; // not usable
+                            continue;
+                        }
+
+                        bool spawned = ItemTransferOps.TrySpawnIntoShelfCompartment(comp, type);
+                        if (!spawned)
+                        {
+                            SMLog.Warn($"[ShopManager] Spawn failed after consume (unopened). type={type} (inventory may desync by 1)");
                             break;
                         }
 
-                        movedForThisComp++;
-                        totalMoved++;
+                        totalConsumed++;
+                        totalPlaced++;
+                        filled++;
                     }
-                }
 
-                if (movedForThisComp > 0)
-                    SMLog.Info($"[ShopManager] Filled {movedForThisComp}/{deficit} for {itemType}.");
-                else
-                    SMLog.Debug($"[ShopManager] Could not fill {itemType} (no matching warehouse stock or move failed).");
+                    if (filled > 0)
+                        SMLog.Info($"[ShopManager] Filled {filled}/{need} for {type}.");
+                }
             }
 
-            SMLog.Info($"[ShopManager] Refill complete. Items moved: {totalMoved}.");
+            // OPTION A: brute-refresh rack box-slot UI after all moves
+            WarehouseBoxOps.RefreshAllWarehouseBoxSlotLabels();
+
+            SMLog.Info($"[ShopManager] Refill complete. Placed={totalPlaced} Consumed={totalConsumed}.");
         }
     }
 }
