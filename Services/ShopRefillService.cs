@@ -1,149 +1,49 @@
 ﻿#nullable enable
-using System;
-using System.Collections.Generic;
 using ShopManager.Config;
-using ShopManager.GameAccess;
 using ShopManager.Logging;
 
 namespace ShopManager.Services
 {
     internal static class ShopRefillService
     {
-        internal static void RunOnce()
+        private static RefillSession? _session;
+
+        internal static bool IsRunning => _session != null;
+
+        internal static void Start()
         {
             if (!SMConfig.Enabled.Value) return;
-
-            // 1) Find shop compartments
-            var shopComps = Finders.FindAllShopItemCompartments();
-            if (shopComps.Count == 0)
+            if (_session != null)
             {
-                SMLog.Warn("[ShopManager] No shop compartments found.");
+                SMLog.Warn("[ShopManager] Start called but a session is already running.");
                 return;
             }
 
-            // 2) Build targets grouped by type
-            var targetsByType = new Dictionary<EItemType, List<ShelfCompartment>>();
-            int targetCount = 0;
+            _session = new RefillSession();
+        }
 
-            foreach (var c in shopComps)
-            {
-                var t = c.GetItemType();
-                if (t == EItemType.None) continue;
+        internal static void Cancel()
+        {
+            if (_session == null) return;
+            _session.Cancel();
+            _session = null;
+            SMLog.Warn("[ShopManager] Refill session cancelled.");
+        }
 
-                int cur = c.GetItemCount();
-                int max = c.GetMaxItemCount();
-                if (max <= 0) continue;
-                if (cur >= max) continue;
+        internal static void Tick()
+        {
+            if (!SMConfig.Enabled.Value) { _session = null; return; }
+            if (_session == null) return;
 
-                if (!targetsByType.TryGetValue(t, out var list))
-                {
-                    list = new List<ShelfCompartment>();
-                    targetsByType[t] = list;
-                }
+            _session.Tick();
+            if (_session.IsFinished) _session = null;
 
-                list.Add(c);
-                targetCount++;
-            }
-
-            if (targetCount == 0)
-            {
-                SMLog.Info("[ShopManager] No labeled shop compartments need refilling.");
-                return;
-            }
-
-            // 3) Build box cache (include stored)
-            var boxCache = WarehouseBoxOps.BuildBoxCache(includeStored: true);
-
-            int totalPlaced = 0;
-            int totalConsumed = 0;
-
-            // 4) For each item type, fill compartments using boxes of that type
-            foreach (var kv in targetsByType)
-            {
-                var type = kv.Key;
-                var comps = kv.Value;
-
-                if (!boxCache.TryGetValue(type, out var boxes) || boxes.Count == 0)
-                {
-                    SMLog.Debug($"[ShopManager] No warehouse boxes for {type}.");
-                    continue;
-                }
-
-                int boxIndex = 0;
-
-                foreach (var comp in comps)
-                {
-                    int cur = comp.GetItemCount();
-                    int max = comp.GetMaxItemCount();
-                    int need = max - cur;
-                    if (need <= 0) continue;
-
-                    int filled = 0;
-
-                    while (filled < need && comp.HasEnoughSlot())
-                    {
-                        // advance to next box with stock
-                        while (boxIndex < boxes.Count && WarehouseBoxOps.GetAvailableUnits(boxes[boxIndex]) <= 0)
-                            boxIndex++;
-
-                        if (boxIndex >= boxes.Count)
-                            break;
-
-                        var box = boxes[boxIndex];
-                        if (box == null) { boxIndex++; continue; }
-
-                        // OPENED BOX: real item move
-                        if (box.IsBoxOpened())
-                        {
-                            if (!WarehouseBoxOps.TryConsumeOneAndGetItemFromOpenedBox(box, out var item) || item == null)
-                            {
-                                boxIndex++; // box not usable right now
-                                continue;
-                            }
-
-                            bool placed = ItemTransferOps.TryPlaceExistingItemIntoShelfCompartment(comp, item);
-                            if (!placed)
-                            {
-                                try { item.transform.SetParent(box.transform, true); } catch { }
-                                SMLog.Debug($"[ShopManager] Place failed after consume (opened). type={type}");
-                                break;
-                            }
-
-                            totalConsumed++;
-                            totalPlaced++;
-                            filled++;
-                            continue;
-                        }
-
-                        // UNOPENED BOX: decrement count, then spawn onto shelf
-                        bool consumed = WarehouseBoxOps.TryConsumeOneFromUnopenedBox(box);
-                        if (!consumed)
-                        {
-                            boxIndex++; // not usable
-                            continue;
-                        }
-
-                        bool spawned = ItemTransferOps.TrySpawnIntoShelfCompartment(comp, type);
-                        if (!spawned)
-                        {
-                            SMLog.Warn($"[ShopManager] Spawn failed after consume (unopened). type={type} (inventory may desync by 1)");
-                            break;
-                        }
-
-                        totalConsumed++;
-                        totalPlaced++;
-                        filled++;
-                    }
-
-                    if (filled > 0)
-                        SMLog.Info($"[ShopManager] Filled {filled}/{need} for {type}.");
-                }
-            }
-
-            // OPTION A: brute-refresh rack box-slot UI after all moves
-            WarehouseBoxOps.RefreshAllWarehouseBoxSlotLabels();
-
-            SMLog.Info($"[ShopManager] Refill complete. Placed={totalPlaced} Consumed={totalConsumed}.");
+            // Clean up when done/cancelled
+            // (RefillSession sets its phase, but we keep it simple here by letting it run to completion)
+            // If you want, we can expose CurrentPhase and clear here.
+            // For now: RefillSession logs completion and we clear when it reaches Done/Cancelled by checking IsRunning externally.
+            // We'll clear when it has finished by observing that it no longer does work next tick.
+            // Practical approach: clear when phase is Done/Cancelled (add a property if you want).
         }
     }
 }

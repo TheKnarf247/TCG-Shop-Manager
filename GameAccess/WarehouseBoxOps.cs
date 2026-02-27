@@ -152,7 +152,7 @@ namespace ShopManager.GameAccess
                 }
                 else
                 {
-                    SafelyDestroyBoxAndDetachFromWarehouseSlot(box);
+                    DeferDestroy(box);
                 }
 
                 return true;
@@ -261,6 +261,26 @@ namespace ShopManager.GameAccess
             catch { /* ignore */ }
 
             try { UnityEngine.Object.Destroy(box.gameObject); } catch { /* ignore */ }
+        }
+        private static readonly List<InteractablePackagingBox_Item> _destroyQueue = new();
+
+        internal static void DeferDestroy(InteractablePackagingBox_Item box)
+        {
+            if (box == null) return;
+            _destroyQueue.Add(box);
+        }
+
+        internal static void FlushDeferredDestroys()
+        {
+            if (_destroyQueue.Count == 0) return;
+
+            for (int i = 0; i < _destroyQueue.Count; i++)
+            {
+                var b = _destroyQueue[i];
+                if (b == null) continue;
+                SafelyDestroyBoxAndDetachFromWarehouseSlot(b);
+            }
+            _destroyQueue.Clear();
         }
     }
 }

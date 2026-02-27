@@ -24,8 +24,16 @@ namespace ShopManager.Automation
             if (!SMConfig.RefillHotkey.Value.IsDown())
                 return;
 
-            SMLog.Info("[ShopManager] Hotkey pressed → running refill.");
-            ShopRefillService.RunOnce();
+            if (!ShopRefillService.IsRunning)
+            {
+                SMLog.Info("[ShopManager] Hotkey pressed → starting refill session.");
+                ShopRefillService.Start();
+            }
+            else
+            {
+                SMLog.Warn("[ShopManager] Hotkey pressed while running → cancelling refill session.");
+                ShopRefillService.Cancel();
+            }
         }
     }
 }

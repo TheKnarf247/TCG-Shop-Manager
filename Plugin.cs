@@ -8,12 +8,12 @@ using UnityEngine;
 
 namespace ShopManager
 {
-    [BepInPlugin(PluginGuid, PluginName, PluginVersion)]
+    [BepInPlugin(
+        MyPluginInfo.PLUGIN_GUID,
+        MyPluginInfo.PLUGIN_NAME,
+        MyPluginInfo.PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
-        public const string PluginGuid = "com.knarf.shopmanager";
-        public const string PluginName = "Shop Manager";
-        public const string PluginVersion = "1.0";
 
         private Harmony _harmony = null!;
 
@@ -22,17 +22,18 @@ namespace ShopManager
             SMLog.Init(Logger);
             SMConfig.Bind(Config);
 
-            _harmony = new Harmony(PluginGuid);
+            _harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
             _harmony.PatchAll();
 
             HotkeyController.Init();
-
-            SMLog.Info($"[{PluginName}] Loaded v{PluginVersion}.");
+            
+            SMLog.Info($"Plugin {MyPluginInfo.PLUGIN_NAME} v:{MyPluginInfo.PLUGIN_VERSION} by Knarf Hasn't Exploded Yet!");
         }
 
         private void Update()
         {
             HotkeyController.Tick();
+            ShopManager.Services.ShopRefillService.Tick();
         }
 
         private void OnDestroy()
