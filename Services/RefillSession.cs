@@ -87,8 +87,12 @@ namespace ShopManager.Services
 
                 case Phase.BuildBoxCache:
                     BoxCache = WarehouseBoxOps.BuildBoxCache(includeStored: true);
+
+                    WarehouseBoxOps.ConsolidateBoxes(BoxCache);
+
                     _typeKeys.Clear();
                     foreach (var k in TargetsByType.Keys) _typeKeys.Add(k);
+
                     _typeIndex = 0;
                     _compIndexForType = 0;
                     _boxIndexForType = 0;
@@ -161,6 +165,15 @@ namespace ShopManager.Services
                     ShelfScanDebug.LogScanDecision(c, "SKIP:inactive", c.GetItemType(), max: -1, cur: -1);
                     continue;
                 }
+
+                // Skip any compartment that belongs to a packaging box
+                // (held box, floor box, loose box, etc.)
+                if (c.GetComponentInParent<InteractablePackagingBox_Item>() != null)
+                {
+                    ShelfScanDebug.LogScanDecision(c, "SKIP:packaging_box_internal", c.GetItemType(), max: -1, cur: -1, includePath: true);
+                    continue;
+                }
+
 
                 // Hard gates (cheap + early)
                 var t = c.GetItemType();
@@ -292,41 +305,27 @@ namespace ShopManager.Services
 
                 bool placedOne = false;
 
-                // OPENED BOX: move real item
+                // NEVER use opened boxes as sources
                 if (box.IsBoxOpened())
                 {
-                    if (!WarehouseBoxOps.TryConsumeOneAndGetItemFromOpenedBox(box, out var item) || item == null)
-                    {
-                        _boxIndexForType++;
-                        continue;
-                    }
-
-                    placedOne = ItemTransferOps.TryPlaceExistingItemIntoShelfCompartment(comp, item);
-                    if (!placedOne)
-                    {
-                        try { item.transform.SetParent(box.transform, true); } catch { }
-                        // Stop trying this compartment this tick; go next to avoid thrash.
-                        _compIndexForType++;
-                        continue;
-                    }
+                    _boxIndexForType++;
+                    continue;
                 }
-                else
-                {
-                    // UNOPENED BOX: decrement and spawn
-                    bool consumed = WarehouseBoxOps.TryConsumeOneFromUnopenedBox(box);
-                    if (!consumed)
-                    {
-                        _boxIndexForType++;
-                        continue;
-                    }
 
-                    placedOne = ItemTransferOps.TrySpawnIntoShelfCompartment(comp, type);
-                    if (!placedOne)
-                    {
-                        SMLog.Warn($"[ShopManager] Spawn failed after consume (unopened). type={type} (inventory may desync by 1)");
-                        _compIndexForType++;
-                        continue;
-                    }
+                // UNOPENED BOX ONLY: decrement and spawn
+                bool consumed = WarehouseBoxOps.TryConsumeOneFromUnopenedBox(box);
+                if (!consumed)
+                {
+                    _boxIndexForType++;
+                    continue;
+                }
+
+                placedOne = ItemTransferOps.TrySpawnIntoShelfCompartment(comp, type);
+                if (!placedOne)
+                {
+                    SMLog.Warn($"[ShopManager] Spawn failed after consume (unopened). type={type} (inventory may desync by 1)");
+                    _compIndexForType++;
+                    continue;
                 }
 
                 if (placedOne)

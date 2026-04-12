@@ -25,7 +25,7 @@ namespace ShopManager.Debugging
 
         internal static void LogNullCandidate(int index)
         {
-            if (!SMConfig.VerboseScanLogging.Value) return;
+            if (!SMConfig.ScanDebugLogging.Value) return;
             SMLog.Info($"[ShelfScanDebug] idx={index} SKIP:null_candidate");
         }
 
@@ -38,7 +38,7 @@ namespace ShopManager.Debugging
             int cur,
             bool includePath = false)
         {
-            if (!SMConfig.VerboseScanLogging.Value) return;
+            if (!SMConfig.ScanDebugLogging.Value) return;
 
             if (sc == null)
             {

@@ -37,42 +37,54 @@ namespace ShopManager.GameAccess
         {
             var dict = new Dictionary<EItemType, List<InteractablePackagingBox_Item>>();
 
-            List<InteractablePackagingBox_Item>? boxes = null;
             try
             {
-                boxes = RestockManager.GetItemPackagingBoxListWithItem(includeStored);
+                var all = Resources.FindObjectsOfTypeAll<ShelfCompartment>();
+                if (all == null || all.Length == 0)
+                    return dict;
+
+                foreach (var sc in all)
+                {
+                    if (sc == null || sc.gameObject == null) continue;
+                    if (!sc.gameObject.scene.IsValid()) continue;
+                    if (!sc.m_CanPutBox) continue;
+
+                    List<InteractablePackagingBox_Item>? boxes = null;
+                    try { boxes = sc.GetInteractablePackagingBoxList(); } catch { }
+
+                    if (boxes == null || boxes.Count == 0) continue;
+
+                    for (int i = 0; i < boxes.Count; i++)
+                    {
+                        var box = boxes[i];
+                        if (box == null) continue;
+                        if ((UnityEngine.Object)box == null) continue;
+                        if (!box.IsValidObject()) continue;
+                        if (box.m_ItemCompartment == null) continue;
+                        if (box.IsBoxOpened()) continue;
+
+                        var t = box.GetItemType();
+                        if (t == EItemType.None) continue;
+
+                        int count = GetAvailableUnits(box);
+                        if (count <= 0) continue;
+
+                        if (!dict.TryGetValue(t, out var list))
+                        {
+                            list = new List<InteractablePackagingBox_Item>();
+                            dict[t] = list;
+                        }
+
+                        // avoid duplicate refs if the game reports the same box more than once
+                        if (!list.Contains(box))
+                            list.Add(box);
+                    }
+                }
             }
             catch (Exception ex)
             {
-                SMLog.Warn($"[WarehouseBoxOps] RestockManager box list not available: {ex.Message}");
+                SMLog.Warn($"[WarehouseBoxOps] BuildBoxCache failed: {ex.Message}");
             }
-
-            if (boxes == null || boxes.Count == 0)
-                return dict;
-
-            foreach (var box in boxes)
-            {
-                if (box == null) continue;
-                if (!box.IsValidObject()) continue;
-                if (box.m_ItemCompartment == null) continue;
-
-                var t = box.GetItemType();
-                if (t == EItemType.None) continue;
-
-                int count = GetAvailableUnits(box);
-                if (count <= 0) continue;
-
-                if (!dict.TryGetValue(t, out var list))
-                {
-                    list = new List<InteractablePackagingBox_Item>();
-                    dict[t] = list;
-                }
-
-                list.Add(box);
-            }
-
-            foreach (var kv in dict)
-                kv.Value.Sort((a, b) => GetAvailableUnits(b).CompareTo(GetAvailableUnits(a)));
 
             return dict;
         }
@@ -126,6 +138,7 @@ namespace ShopManager.GameAccess
                 return false;
             }
         }
+       
 
         internal static bool TryConsumeOneFromUnopenedBox(InteractablePackagingBox_Item box)
         {
@@ -163,6 +176,109 @@ namespace ShopManager.GameAccess
                 return false;
             }
         }
+        internal static bool TryAddOneToUnopenedBox(InteractablePackagingBox_Item box)
+        {
+            if (box == null || !box.IsValidObject()) return false;
+            if (box.m_ItemCompartment == null) return false;
+            if (box.IsBoxOpened()) return false;
+
+            try
+            {
+                int before = GetAvailableUnits(box);
+                int max = box.m_ItemCompartment.GetMaxItemCount();
+                if (before >= max) return false;
+
+                int after = before + 1;
+
+                if (_setItemAmount != null)
+                    _setItemAmount(box.m_ItemCompartment, after);
+
+                box.m_ItemCompartment.PreSpawnItemUpdate(after);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                SMLog.Debug($"[WarehouseBoxOps] Add to unopened box failed: {ex.Message}");
+                return false;
+            }
+        }
+        internal static void ConsolidateBoxes(Dictionary<EItemType, List<InteractablePackagingBox_Item>> boxCache)
+        {
+            foreach (var kvp in boxCache)
+            {
+                var boxes = kvp.Value;
+                if (boxes == null || boxes.Count < 2) continue;
+
+                // fullest first so we fill one box up before moving to the next
+                boxes.Sort((a, b) => GetAvailableUnits(b).CompareTo(GetAvailableUnits(a)));
+
+                int targetIndex = 0;
+                int sourceIndex = boxes.Count - 1;
+
+                while (targetIndex < sourceIndex)
+                {
+                    var target = boxes[targetIndex];
+                    var source = boxes[sourceIndex];
+
+                    if (target == null || source == null)
+                    {
+                        sourceIndex--;
+                        continue;
+                    }
+
+                    if (target == source)
+                    {
+                        sourceIndex--;
+                        continue;
+                    }
+
+                    if (target.IsBoxOpened() || source.IsBoxOpened())
+                    {
+                        sourceIndex--;
+                        continue;
+                    }
+
+                    int targetCount = GetAvailableUnits(target);
+                    int sourceCount = GetAvailableUnits(source);
+                    int targetMax = target.m_ItemCompartment?.GetMaxItemCount() ?? 0;
+
+                    if (sourceCount <= 0)
+                    {
+                        sourceIndex--;
+                        continue;
+                    }
+
+                    if (targetCount >= targetMax)
+                    {
+                        targetIndex++;
+                        continue;
+                    }
+
+                    int moveCount = Math.Min(targetMax - targetCount, sourceCount);
+
+                    for (int i = 0; i < moveCount; i++)
+                    {
+                        if (!TryConsumeOneFromUnopenedBox(source))
+                            break;
+
+                        if (!TryAddOneToUnopenedBox(target))
+                            break;
+                    }
+
+                    if (GetAvailableUnits(source) <= 0)
+                        sourceIndex--;
+
+                    if (GetAvailableUnits(target) >= targetMax)
+                        targetIndex++;
+                }
+
+                // remove dead/empty refs from the working list so refill uses the cleaned result
+                boxes.RemoveAll(b => b == null || (UnityEngine.Object)b == null || GetAvailableUnits(b) <= 0);
+
+                // now refill should drain least-full first like you wanted
+                boxes.Sort((a, b) => GetAvailableUnits(a).CompareTo(GetAvailableUnits(b)));
+            }
+        }
 
         /// <summary>
         /// Option A: After refill, brute-refresh every warehouse BOX SLOT (ShelfCompartment.m_CanPutBox == true)
@@ -187,8 +303,13 @@ namespace ShopManager.GameAccess
                     try
                     {
                         sc.SetPriceTagItemAmountText();
-                        // Optional but can help icons update for some racks:
-                        sc.SetPriceTagItemImage();
+
+                        List<InteractablePackagingBox_Item>? list = null;
+                        try { list = sc.GetInteractablePackagingBoxList(); } catch { }
+
+                        if (list != null && list.Count > 0)
+                            //sc.SetPriceTagItemImage();
+
                         refreshed++;
                     }
                     catch { /* ignore per-compartment */ }
@@ -201,7 +322,7 @@ namespace ShopManager.GameAccess
 
             SMLog.Info($"[WarehouseBoxOps] Refreshed {refreshed} warehouse box-slot compartments.");
         }
-
+        
         /// <summary>
         /// When a box hits 0, destroying it without removing it from the warehouse slot list
         /// can leave stale UI/state. This tries to detach it first, then destroys.
@@ -230,21 +351,23 @@ namespace ShopManager.GameAccess
                         // Unity destroyed-object weirdness: use ReferenceEquals and also Unity null checks.
                         bool contains = false;
                         for (int i = 0; i < list.Count; i++)
-{
-    var b = list[i];
-    if (b == null) continue;
-    if ((UnityEngine.Object)b == null) continue; // Unity fake-null
+        {
+            var b = list[i];
+            if (b == null) continue;
+            if ((UnityEngine.Object)b == null) continue; // Unity fake-null
 
-    if (ReferenceEquals(b, box))
-    {
-        contains = true;
-        break;
-    }
-}
+            if (ReferenceEquals(b, box))
+            {
+                contains = true;
+                break;
+            }
+        }
 
                         if (contains)
                         {
                             try { sc.RemoveBox(box); } catch { /* ignore */ }
+                            try { sc.SetPriceTagItemAmountText(); } catch { }
+                            // try { sc.SetPriceTagItemImage(); } catch { }
                             break;
                         }
                     }
