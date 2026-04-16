@@ -11,6 +11,7 @@ namespace ShopManager.Services
 {
     internal sealed class RefillSession
     {
+        private bool _loggedConsolidationStart;
         internal enum Phase
         {
             None,
@@ -18,6 +19,7 @@ namespace ShopManager.Services
             ScanShopCompartments,
             BuildBoxCache,
             FillShelves,
+            ConsolidateBoxes,
             RefreshWarehouseUI,
             Done,
             Cancelled
@@ -77,8 +79,8 @@ namespace ShopManager.Services
                     {
                         if (TargetCompartmentCount == 0)
                         {
-                            SMLog.Info("[ShopManager] No labeled shop compartments need refilling.");
-                            CurrentPhase = Phase.Done;
+                            SMLog.Info("[ShopManager] No refill needed, proceeding to consolidation.");
+                            CurrentPhase = Phase.BuildBoxCache;
                             break;
                         }
                         CurrentPhase = Phase.BuildBoxCache;
@@ -88,11 +90,10 @@ namespace ShopManager.Services
                 case Phase.BuildBoxCache:
                     BoxCache = WarehouseBoxOps.BuildBoxCache(includeStored: true);
 
-                    WarehouseBoxOps.ConsolidateBoxes(BoxCache);
-
                     _typeKeys.Clear();
                     foreach (var k in TargetsByType.Keys) _typeKeys.Add(k);
 
+                    _loggedConsolidationStart = false;
                     _typeIndex = 0;
                     _compIndexForType = 0;
                     _boxIndexForType = 0;
@@ -101,7 +102,21 @@ namespace ShopManager.Services
 
                 case Phase.FillShelves:
                     if (FillShelvesChunk())
+                        CurrentPhase = Phase.ConsolidateBoxes;
+                    break;
+
+                case Phase.ConsolidateBoxes:
+                    if (!_loggedConsolidationStart)
+                    {
+                        SMLog.Info("[ShopManager] Starting box consolidation...");
+                        _loggedConsolidationStart = true;
+                    }
+
+                    if (WarehouseBoxOps.ConsolidateBoxesStep(BoxCache, 5))
+                    {
+                        SMLog.Info("[ShopManager] Consolidation complete.");
                         CurrentPhase = Phase.RefreshWarehouseUI;
+                    }
                     break;
 
                 case Phase.RefreshWarehouseUI:

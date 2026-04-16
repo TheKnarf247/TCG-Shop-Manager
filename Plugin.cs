@@ -34,6 +34,7 @@ namespace ShopManager
         {
             HotkeyController.Tick();
             ShopManager.Services.ShopRefillService.Tick();
+            ShopManager.Services.ShopRunScheduler.Tick();
         }
 
         private void OnDestroy()

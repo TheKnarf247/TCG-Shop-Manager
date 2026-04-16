@@ -19,6 +19,10 @@ namespace ShopManager.Config
         internal static ConfigEntry<int> PlacementsPerFrame = null!;
         internal static ConfigEntry<int> LogProgressEveryN = null!;
 
+        //Scheduling controls
+        internal static ConfigEntry<bool> EnableScheduledRuns = null!;
+        internal static ConfigEntry<float> ScheduledRunIntervalSeconds = null!;
+
         internal static void Bind(ConfigFile cfg)
         {
             Enabled = cfg.Bind("00 - General", "Enabled", true, "Enable/disable Shop Manager.");
@@ -34,6 +38,22 @@ namespace ShopManager.Config
 
             LogProgressEveryN = cfg.Bind("02 - Performance", "LogProgressEveryN", 500,
                 "Log progress every N scanned compartments (0 disables progress logging).");
+
+            EnableScheduledRuns = cfg.Bind(
+                "03 - Scheduler",
+                "EnableScheduledRuns",
+                false,
+                "Automatically run Shop Manager on a timer."
+            );
+
+            ScheduledRunIntervalSeconds = cfg.Bind(
+                "03 - Scheduler",
+                "ScheduledRunIntervalSeconds",
+                300f,
+                new ConfigDescription(
+                    "How often Shop Manager should run automatically, in seconds.",
+                    new AcceptableValueRange<float>(5f, 86400f))
+            );
 
             // Keep all noisy stuff together
             VerboseLogging = cfg.Bind("99 - Debug", "VerboseLogging", false,

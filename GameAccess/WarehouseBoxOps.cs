@@ -10,12 +10,14 @@ namespace ShopManager.GameAccess
 {
     internal static class WarehouseBoxOps
     {
+        private static int _consolidationStartIndex = 0;
         // ShelfCompartment backing count field (used when compartment inactive/unspawned)
         private static readonly Func<ShelfCompartment, int>? _getItemAmount;
         private static readonly Action<ShelfCompartment, int>? _setItemAmount;
 
         static WarehouseBoxOps()
         {
+
             try
             {
                 var fi = AccessTools.Field(typeof(ShelfCompartment), "m_ItemAmount");
@@ -202,12 +204,39 @@ namespace ShopManager.GameAccess
                 return false;
             }
         }
-        internal static void ConsolidateBoxes(Dictionary<EItemType, List<InteractablePackagingBox_Item>> boxCache)
+        internal static bool ConsolidateBoxesStep(
+            Dictionary<EItemType, List<InteractablePackagingBox_Item>> boxCache,
+            int maxMovesPerCall)
         {
-            foreach (var kvp in boxCache)
+            if (boxCache == null || boxCache.Count == 0)
+                return true;
+
+            int moves = 0;
+
+            var keys = boxCache.Keys.ToList();
+            if (keys.Count == 0)
+                return true;
+
+            for (int k = 0; k < keys.Count; k++)
             {
-                var boxes = kvp.Value;
-                if (boxes == null || boxes.Count < 2) continue;
+                int keyIndex = (_consolidationStartIndex + k) % keys.Count;
+                var key = keys[keyIndex];
+                var boxes = boxCache[key];
+
+                if (boxes == null || boxes.Count < 2)
+                    continue;
+
+                // Clean list first
+                boxes.RemoveAll(b =>
+                    b == null ||
+                    (UnityEngine.Object)b == null ||
+                    !b.IsValidObject() ||
+                    b.m_ItemCompartment == null ||
+                    b.IsBoxOpened() ||
+                    GetAvailableUnits(b) <= 0);
+
+                if (boxes.Count < 2)
+                    continue;
 
                 // fullest first so we fill one box up before moving to the next
                 boxes.Sort((a, b) => GetAvailableUnits(b).CompareTo(GetAvailableUnits(a)));
@@ -254,15 +283,29 @@ namespace ShopManager.GameAccess
                         continue;
                     }
 
-                    int moveCount = Math.Min(targetMax - targetCount, sourceCount);
+                    int movesPossible = Math.Min(targetMax - targetCount, sourceCount);
+                    if (movesPossible <= 0)
+                    {
+                        SMLog.Debug($"[ShopManager] No consolidation possible for {key} (target full or source empty)");
+                        sourceIndex--;
+                        continue;
+                    }
 
-                    for (int i = 0; i < moveCount; i++)
+                    while (movesPossible > 0 && moves < maxMovesPerCall)
                     {
                         if (!TryConsumeOneFromUnopenedBox(source))
                             break;
 
                         if (!TryAddOneToUnopenedBox(target))
+                        {
+                            // best-effort rollback
+                            TryAddOneToUnopenedBox(source);
                             break;
+                        }
+
+                        moves++;
+                        SMLog.Debug($"[ShopManager] Consolidated 1 item for {key} (move {moves}/{maxMovesPerCall})");
+                        movesPossible--;
                     }
 
                     if (GetAvailableUnits(source) <= 0)
@@ -270,14 +313,42 @@ namespace ShopManager.GameAccess
 
                     if (GetAvailableUnits(target) >= targetMax)
                         targetIndex++;
+
+                    // Budget exhausted: stop now and continue next frame
+                    if (moves >= maxMovesPerCall)
+                    {
+                        boxes.RemoveAll(b =>
+                            b == null ||
+                            (UnityEngine.Object)b == null ||
+                            GetAvailableUnits(b) <= 0);
+
+                        boxes.Sort((a, b) => GetAvailableUnits(a).CompareTo(GetAvailableUnits(b)));
+
+                        _consolidationStartIndex = (_consolidationStartIndex + 1) % keys.Count;
+
+                        SMLog.Debug($"[ShopManager] Consolidation tick complete. Moves={moves}");
+                        return false; // not done yet
+                    }
                 }
 
-                // remove dead/empty refs from the working list so refill uses the cleaned result
-                boxes.RemoveAll(b => b == null || (UnityEngine.Object)b == null || GetAvailableUnits(b) <= 0);
+                // Keep refill order as least-full first after consolidation work
+                boxes.RemoveAll(b =>
+                    b == null ||
+                    (UnityEngine.Object)b == null ||
+                    GetAvailableUnits(b) <= 0);
 
-                // now refill should drain least-full first like you wanted
                 boxes.Sort((a, b) => GetAvailableUnits(a).CompareTo(GetAvailableUnits(b)));
             }
+
+            if (moves == 0)
+                SMLog.Debug("[ShopManager] No consolidation moves performed this tick.");
+
+            SMLog.Debug($"[ShopManager] Consolidation tick complete. Moves={moves}");
+
+            if (keys.Count > 0)
+                _consolidationStartIndex = (_consolidationStartIndex + 1) % keys.Count;
+
+            return true; // all consolidation complete
         }
 
         /// <summary>

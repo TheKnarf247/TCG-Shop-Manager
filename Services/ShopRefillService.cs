@@ -20,6 +20,7 @@ namespace ShopManager.Services
             }
 
             _session = new RefillSession();
+            ShopRunScheduler.Reset();
         }
 
         internal static void Cancel()
