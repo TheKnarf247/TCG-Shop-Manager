@@ -4,7 +4,6 @@ using HarmonyLib;
 using ShopManager.Automation;
 using ShopManager.Config;
 using ShopManager.Logging;
-using UnityEngine;
 
 namespace ShopManager
 {
@@ -14,7 +13,6 @@ namespace ShopManager
         MyPluginInfo.PLUGIN_VERSION)]
     public class Plugin : BaseUnityPlugin
     {
-
         private Harmony _harmony = null!;
 
         private void Awake()
@@ -26,7 +24,7 @@ namespace ShopManager
             _harmony.PatchAll();
 
             HotkeyController.Init();
-            
+
             SMLog.Info($"Plugin {MyPluginInfo.PLUGIN_NAME} v:{MyPluginInfo.PLUGIN_VERSION} by Knarf Hasn't Exploded Yet!");
         }
 

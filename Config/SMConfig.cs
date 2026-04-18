@@ -23,6 +23,29 @@ namespace ShopManager.Config
         internal static ConfigEntry<bool> EnableScheduledRuns = null!;
         internal static ConfigEntry<float> ScheduledRunIntervalSeconds = null!;
 
+        //Lighting
+        internal static ConfigEntry<bool> EnableAutoLights = null!;
+        internal static ConfigEntry<string> AutoLightOnTime = null!;
+
+        //Interactions
+        internal static ConfigEntry<bool> EnableFastInteractions = null!;
+        internal static ConfigEntry<float> FastInteractionSpeedMultiplier = null!;
+
+        //Shop Open Automation
+        internal static ConfigEntry<bool> EnableShopOpenAutomation = null!;
+        internal static ConfigEntry<int> ShopOpenAutomationDelayMinutes = null!;
+
+        //Pack Open Automation
+        internal static ConfigEntry<bool> EnablePackOpenAutomation = null!;
+        internal static ConfigEntry<KeyboardShortcut> PackOpenAutomationToggleKey = null!;
+        internal static ConfigEntry<bool> PackOpenAutomationEnabledByDefault = null!;
+        internal static ConfigEntry<float> PackOpenAutomationNextPackDelaySeconds = null!;
+        internal static ConfigEntry<float> PackOpenAutomationResultsCloseDelaySeconds = null!;
+        internal static ConfigEntry<bool> PackOpenAutomationStopOnValuable = null!;
+        internal static ConfigEntry<float> PackOpenAutomationValuableThreshold = null!;
+        internal static ConfigEntry<bool> PackOpenAutomationStopOnNewCard = null!;
+        internal static ConfigEntry<bool> ShowPackOpenAutomationStatusText = null!;
+
         internal static void Bind(ConfigFile cfg)
         {
             Enabled = cfg.Bind("00 - General", "Enabled", true, "Enable/disable Shop Manager.");
@@ -55,6 +78,27 @@ namespace ShopManager.Config
                     new AcceptableValueRange<float>(5f, 86400f))
             );
 
+            EnableAutoLights = cfg.Bind(
+                "04 - Lighting",
+                "EnableAutoLights",
+                true,
+                "Automatically turns on shop lights at the configured time."
+            );
+
+            AutoLightOnTime = cfg.Bind(
+                "04 - Lighting",
+                "AutoLightOnTime",
+                "16:00",
+                "Time to automatically turn on shop lights in 24-hour format (HH:mm). Example: 16:00 = 4:00 PM."
+            );
+
+            EnableShopOpenAutomation = cfg.Bind(
+                "05 - Shop Open Automation",
+                "EnableShopOpenAutomation",
+                true,
+                "Automatically opens the shop after a new day starts."
+            );
+                       
             // Keep all noisy stuff together
             VerboseLogging = cfg.Bind("99 - Debug", "VerboseLogging", false,
                 "Enable extra logging for troubleshooting.");
