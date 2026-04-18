@@ -26,26 +26,11 @@ namespace ShopManager.Config
         //Lighting
         internal static ConfigEntry<bool> EnableAutoLights = null!;
         internal static ConfigEntry<string> AutoLightOnTime = null!;
-
-        //Interactions
-        internal static ConfigEntry<bool> EnableFastInteractions = null!;
-        internal static ConfigEntry<float> FastInteractionSpeedMultiplier = null!;
-
+                
         //Shop Open Automation
         internal static ConfigEntry<bool> EnableShopOpenAutomation = null!;
         internal static ConfigEntry<int> ShopOpenAutomationDelayMinutes = null!;
-
-        //Pack Open Automation
-        internal static ConfigEntry<bool> EnablePackOpenAutomation = null!;
-        internal static ConfigEntry<KeyboardShortcut> PackOpenAutomationToggleKey = null!;
-        internal static ConfigEntry<bool> PackOpenAutomationEnabledByDefault = null!;
-        internal static ConfigEntry<float> PackOpenAutomationNextPackDelaySeconds = null!;
-        internal static ConfigEntry<float> PackOpenAutomationResultsCloseDelaySeconds = null!;
-        internal static ConfigEntry<bool> PackOpenAutomationStopOnValuable = null!;
-        internal static ConfigEntry<float> PackOpenAutomationValuableThreshold = null!;
-        internal static ConfigEntry<bool> PackOpenAutomationStopOnNewCard = null!;
-        internal static ConfigEntry<bool> ShowPackOpenAutomationStatusText = null!;
-
+               
         internal static void Bind(ConfigFile cfg)
         {
             Enabled = cfg.Bind("00 - General", "Enabled", true, "Enable/disable Shop Manager.");
