@@ -37,6 +37,8 @@ namespace ShopManager.Services
 
         // Boxes
         internal Dictionary<EItemType, List<InteractablePackagingBox_Item>> BoxCache = new();
+        internal Dictionary<EItemType, List<ShelfCompartment>> StoredBoxCache = new();
+        private int _storedIndexForType;
 
         // Fill iteration state
         private readonly List<EItemType> _typeKeys = new();
@@ -71,7 +73,8 @@ namespace ShopManager.Services
             {
                 case Phase.GatherCandidates:
                     GatherCandidates();
-                    CurrentPhase = Phase.ScanShopCompartments;
+                    if (CurrentPhase != Phase.Done)
+                        CurrentPhase = Phase.ScanShopCompartments;
                     break;
 
                 case Phase.ScanShopCompartments:
@@ -89,6 +92,7 @@ namespace ShopManager.Services
 
                 case Phase.BuildBoxCache:
                     BoxCache = WarehouseBoxOps.BuildBoxCache(includeStored: true);
+                    StoredBoxCache = WarehouseBoxOps.BuildStoredBoxCache();
 
                     _typeKeys.Clear();
                     foreach (var k in TargetsByType.Keys) _typeKeys.Add(k);
@@ -97,6 +101,7 @@ namespace ShopManager.Services
                     _typeIndex = 0;
                     _compIndexForType = 0;
                     _boxIndexForType = 0;
+                    _storedIndexForType = 0;
                     CurrentPhase = Phase.FillShelves;
                     break;
 
@@ -260,15 +265,20 @@ namespace ShopManager.Services
                     _typeIndex++;
                     _compIndexForType = 0;
                     _boxIndexForType = 0;
+                    _storedIndexForType = 0;
                     continue;
                 }
 
-                if (!BoxCache.TryGetValue(type, out var boxes) || boxes.Count == 0)
+                BoxCache.TryGetValue(type, out var boxes);
+                StoredBoxCache.TryGetValue(type, out var storedSlots);
+                bool hasPhysical = boxes != null && boxes.Count > 0;
+                bool hasStored = storedSlots != null && storedSlots.Count > 0;
+                if (!hasPhysical && !hasStored)
                 {
-                    // no warehouse inventory for this type; move on
                     _typeIndex++;
                     _compIndexForType = 0;
                     _boxIndexForType = 0;
+                    _storedIndexForType = 0;
                     continue;
                 }
 
@@ -278,6 +288,7 @@ namespace ShopManager.Services
                     _typeIndex++;
                     _compIndexForType = 0;
                     _boxIndexForType = 0;
+                    _storedIndexForType = 0;
                     continue;
                 }
 
@@ -302,43 +313,75 @@ namespace ShopManager.Services
                     continue;
                 }
 
-                // advance to next box with stock
-                while (_boxIndexForType < boxes.Count && WarehouseBoxOps.GetAvailableUnits(boxes[_boxIndexForType]) <= 0)
-                    _boxIndexForType++;
+                // Prefer stored records; use the old physical-box path as a fallback.
+                bool consumed = false;
+                bool fromStored = false;
+                ShelfCompartment? sourceSlot = null;
+                bool sourceBig = false;
 
-                if (_boxIndexForType >= boxes.Count)
+                if (storedSlots != null)
                 {
-                    // out of boxes for this type
+                    while (_storedIndexForType < storedSlots.Count)
+                    {
+                        var slot = storedSlots[_storedIndexForType];
+                        if (slot == null || slot.GetStoredBoxRecordCount() == 0)
+                        {
+                            _storedIndexForType++;
+                            continue;
+                        }
+                        var record = slot.PeekStoredBoxRecord(slot.GetStoredBoxRecordCount() - 1);
+                        if (record.itemType != type || record.amount <= 0)
+                        {
+                            _storedIndexForType++;
+                            continue;
+                        }
+                        sourceBig = record.isBigBox;
+                        if (WarehouseBoxOps.TryConsumeStoredUnit(slot, type))
+                        {
+                            sourceSlot = slot;
+                            consumed = true;
+                            fromStored = true;
+                            break;
+                        }
+                        _storedIndexForType++;
+                    }
+                }
+
+                if (!consumed && boxes != null)
+                {
+                    while (_boxIndexForType < boxes.Count &&
+                           WarehouseBoxOps.GetAvailableUnits(boxes[_boxIndexForType]) <= 0)
+                        _boxIndexForType++;
+                    while (_boxIndexForType < boxes.Count)
+                    {
+                        var box = boxes[_boxIndexForType];
+                        if (box != null && !box.IsBoxOpened() &&
+                            WarehouseBoxOps.TryConsumeOneFromUnopenedBox(box))
+                        {
+                            consumed = true;
+                            break;
+                        }
+                        _boxIndexForType++;
+                    }
+                }
+
+                if (!consumed)
+                {
                     _typeIndex++;
                     _compIndexForType = 0;
                     _boxIndexForType = 0;
+                    _storedIndexForType = 0;
                     continue;
                 }
 
-                var box = boxes[_boxIndexForType];
-                if (box == null) { _boxIndexForType++; continue; }
-
-                bool placedOne = false;
-
-                // NEVER use opened boxes as sources
-                if (box.IsBoxOpened())
-                {
-                    _boxIndexForType++;
-                    continue;
-                }
-
-                // UNOPENED BOX ONLY: decrement and spawn
-                bool consumed = WarehouseBoxOps.TryConsumeOneFromUnopenedBox(box);
-                if (!consumed)
-                {
-                    _boxIndexForType++;
-                    continue;
-                }
-
-                placedOne = ItemTransferOps.TrySpawnIntoShelfCompartment(comp, type);
+                bool placedOne = ItemTransferOps.TrySpawnIntoShelfCompartment(comp, type);
                 if (!placedOne)
                 {
-                    SMLog.Warn($"[ShopManager] Spawn failed after consume (unopened). type={type} (inventory may desync by 1)");
+                    if (fromStored && sourceSlot != null)
+                        WarehouseBoxOps.RestoreStoredUnit(sourceSlot, type, sourceBig);
+                    else
+                        SMLog.Warn($"[ShopManager] Physical box consumed but spawn failed: {type}");
+                    SMLog.Warn($"[ShopManager] Spawn failed: {type}");
                     _compIndexForType++;
                     continue;
                 }
@@ -356,11 +399,11 @@ namespace ShopManager.Services
 
                 // If compartment is now full, move on; otherwise keep filling it next loop if budget remains
                 if (ShopManager.GameAccess.ShelfCompartmentOps.GetCurrentUnits(comp) >= comp.GetMaxItemCount())
-                    _compIndexForType++;               
+                    _compIndexForType++;
             }
 
             return false;
-        
+
         }
         internal bool IsFinished => CurrentPhase is Phase.Done or Phase.Cancelled;
     }

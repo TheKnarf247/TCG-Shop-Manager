@@ -91,6 +91,61 @@ namespace ShopManager.GameAccess
             return dict;
         }
 
+        // New warehouse storage uses lightweight StoredBoxRecord entries instead of box GameObjects.
+        // Cache compartments, not record indices: AddStoredBoxRecord reorders records.
+        internal static Dictionary<EItemType, List<ShelfCompartment>> BuildStoredBoxCache()
+        {
+            var cache = new Dictionary<EItemType, List<ShelfCompartment>>();
+            int slots = 0, records = 0;
+            try
+            {
+                foreach (var sc in Resources.FindObjectsOfTypeAll<ShelfCompartment>())
+                {
+                    if (sc == null || sc.gameObject == null || !sc.gameObject.scene.IsValid()) continue;
+                    if (sc.GetWarehouseShelf() == null) continue;
+                    slots++;
+                    int count = sc.GetStoredBoxRecordCount();
+                    records += count;
+                    // Pop API only supports the last record. Each shelf is normally one item type.
+                    for (int i = 0; i < count; i++)
+                    {
+                        var record = sc.PeekStoredBoxRecord(i);
+                        if (record.itemType == EItemType.None || record.amount <= 0) continue;
+                        if (!cache.TryGetValue(record.itemType, out var list))
+                            cache[record.itemType] = list = new List<ShelfCompartment>();
+                        if (!list.Contains(sc)) list.Add(sc);
+                    }
+                }
+                SMLog.Info($"[WarehouseBoxOps] Stored box cache: slots={slots} records={records} types={cache.Count}");
+            }
+            catch (Exception ex)
+            {
+                SMLog.Warn($"[WarehouseBoxOps] BuildStoredBoxCache failed: {ex}");
+            }
+            return cache;
+        }
+
+        // Only consume from the LAST record, matching the game's supported pop operation.
+        internal static bool TryConsumeStoredUnit(ShelfCompartment sc, EItemType type)
+        {
+            if (sc == null || sc.GetStoredBoxRecordCount() == 0) return false;
+            int last = sc.GetStoredBoxRecordCount() - 1;
+            var peek = sc.PeekStoredBoxRecord(last);
+            if (peek.itemType != type || peek.amount <= 0) return false;
+            if (!sc.TryPopLastStoredBoxRecord(out var record)) return false;
+            record.amount--;
+            if (record.amount > 0) sc.AddStoredBoxRecord(record);
+            return true;
+        }
+
+        internal static void RestoreStoredUnit(ShelfCompartment sc, EItemType type, bool isBigBox)
+        {
+            if (sc == null) return;
+            // Rollback is only used after a failed spawn. Restore as a separate 1-unit record
+            // rather than risking modification of an unrelated record.
+            sc.AddStoredBoxRecord(new StoredBoxRecord { itemType = type, amount = 1, isBigBox = isBigBox });
+        }
+
         internal static int GetAvailableUnits(InteractablePackagingBox_Item box)
         {
             if (box == null) return 0;
@@ -140,7 +195,7 @@ namespace ShopManager.GameAccess
                 return false;
             }
         }
-       
+
 
         internal static bool TryConsumeOneFromUnopenedBox(InteractablePackagingBox_Item box)
         {
@@ -375,12 +430,7 @@ namespace ShopManager.GameAccess
                     {
                         sc.SetPriceTagItemAmountText();
 
-                        List<InteractablePackagingBox_Item>? list = null;
-                        try { list = sc.GetInteractablePackagingBoxList(); } catch { }
-
-                        if (list != null && list.Count > 0)
-                            //sc.SetPriceTagItemImage();
-
+                        // Labels work for both physical boxes and StoredBoxRecord-backed inventory.
                         refreshed++;
                     }
                     catch { /* ignore per-compartment */ }
@@ -393,7 +443,7 @@ namespace ShopManager.GameAccess
 
             SMLog.Info($"[WarehouseBoxOps] Refreshed {refreshed} warehouse box-slot compartments.");
         }
-        
+
         /// <summary>
         /// When a box hits 0, destroying it without removing it from the warehouse slot list
         /// can leave stale UI/state. This tries to detach it first, then destroys.

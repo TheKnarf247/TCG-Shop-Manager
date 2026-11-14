@@ -19,7 +19,6 @@ namespace ShopManager.Automation
 
         internal static void Tick()
         {
-            ShopManager.Patches.PackOpeningController.Tick();
             if (!SMConfig.Enabled.Value) return;
 
             if (!SMConfig.RefillHotkey.Value.IsDown())
