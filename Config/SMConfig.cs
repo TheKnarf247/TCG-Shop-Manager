@@ -42,6 +42,7 @@ namespace ShopManager.Config
 
         internal static void Bind(ConfigFile cfg)
         {
+            ShopManager.GameAccess.AutoWarehouseRefillSource.Bind(cfg);
             Enabled = cfg.Bind("00 - General", "Enabled", true, "Enable/disable Shop Manager.");
 
             RefillHotkey = cfg.Bind(

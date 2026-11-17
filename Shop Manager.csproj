@@ -14,7 +14,7 @@
 
 		<RootNamespace>ShopManager</RootNamespace>
 		<AssemblyName>ShopManager</AssemblyName>
-		<Version>$(release)1.5</Version>
+		<Version>$(release)1.6</Version>
 		<AssemblyTitle>Shop Manager</AssemblyTitle>
 
 	</PropertyGroup>

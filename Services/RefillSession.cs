@@ -39,6 +39,7 @@ namespace ShopManager.Services
         internal Dictionary<EItemType, List<InteractablePackagingBox_Item>> BoxCache = new();
         internal Dictionary<EItemType, List<ShelfCompartment>> StoredBoxCache = new();
         private int _storedIndexForType;
+        private AutoWarehouseRefillSource? _autoWarehouse;
 
         // Fill iteration state
         private readonly List<EItemType> _typeKeys = new();
@@ -93,6 +94,7 @@ namespace ShopManager.Services
                 case Phase.BuildBoxCache:
                     BoxCache = WarehouseBoxOps.BuildBoxCache(includeStored: true);
                     StoredBoxCache = WarehouseBoxOps.BuildStoredBoxCache();
+                    _autoWarehouse = TargetsByType.Count == 0 ? null : AutoWarehouseRefillSource.Capture();
 
                     _typeKeys.Clear();
                     foreach (var k in TargetsByType.Keys) _typeKeys.Add(k);
@@ -273,7 +275,7 @@ namespace ShopManager.Services
                 StoredBoxCache.TryGetValue(type, out var storedSlots);
                 bool hasPhysical = boxes != null && boxes.Count > 0;
                 bool hasStored = storedSlots != null && storedSlots.Count > 0;
-                if (!hasPhysical && !hasStored)
+                if (!hasPhysical && !hasStored && _autoWarehouse?.HasProduct(type) != true)
                 {
                     _typeIndex++;
                     _compIndexForType = 0;
@@ -363,6 +365,16 @@ namespace ShopManager.Services
                         }
                         _boxIndexForType++;
                     }
+                }
+
+                if (!consumed && _autoWarehouse?.TryRefillOne(comp, type) == true)
+                {
+                    TotalConsumed++;
+                    TotalPlaced++;
+                    placementsThisTick++;
+                    if (ShelfCompartmentOps.GetCurrentUnits(comp) >= comp.GetMaxItemCount())
+                        _compIndexForType++;
+                    continue;
                 }
 
                 if (!consumed)
